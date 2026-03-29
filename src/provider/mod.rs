@@ -15,6 +15,10 @@ pub mod pt256;
 pub mod traits;
 
 mod msm;
+#[allow(dead_code)]
+mod ntt;
+#[allow(unsafe_code, dead_code)]
+mod utils;
 
 use crate::{
   provider::{
