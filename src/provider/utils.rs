@@ -3,6 +3,7 @@
 //! Provides a cache-oblivious matrix transpose and a strided matrix view (`MatrixMut`)
 //! used by NTT-based Reed-Solomon encoding and other PCS infrastructure.
 // Ported from https://github.com/WizardOfMenlo/whir
+
 use std::{
   marker::PhantomData,
   mem::{size_of, swap},

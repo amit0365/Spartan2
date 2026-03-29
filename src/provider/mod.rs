@@ -14,6 +14,8 @@ pub mod pcs;
 pub mod pt256;
 pub mod traits;
 
+#[allow(dead_code)]
+mod merkle_tree;
 mod msm;
 #[allow(dead_code)]
 mod ntt;
