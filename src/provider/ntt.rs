@@ -3,6 +3,7 @@
 //! Implements the √N Cooley-Tukey six-step algorithm to achieve parallelism with good locality.
 //! A global cache is used for twiddle factors.
 // Ported from https://github.com/WizardOfMenlo/whir
+
 use std::{
   any::{Any, TypeId},
   collections::HashMap,
@@ -22,9 +23,11 @@ static ENGINE_CACHE: LazyLock<Mutex<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>
 
 /// Engine for computing NTTs over arbitrary fields.
 /// Assumes the field has large two-adicity.
+#[derive(Debug)]
 pub struct NttEngine<F: PrimeField> {
-  order: usize,   // order of omega_orger
-  omega_order: F, // primitive order'th root.
+  order: usize,         // order of omega_orger
+  divisors: Vec<usize>, // divisors of the order.
+  omega_order: F,       // primitive order'th root.
 
   // Roots of small order (zero if unavailable). The naming convention is that omega_foo has order foo.
   half_omega_3_1_plus_2: F, // ½(ω₃ + ω₃²)
@@ -90,7 +93,7 @@ impl<F: PrimeField> NttEngine<F> {
       for _ in 0..(F::S - 63) {
         generator = generator.square();
       }
-      Self::new(1usize << 63, generator)
+      Self::new(1usize << (usize::BITS - 1), generator)
     }
   }
 }
@@ -114,6 +117,7 @@ impl<F: PrimeField> NttEngine<F> {
       omega_16_3: F::ZERO,
       omega_16_9: F::ZERO,
       roots: RwLock::new(Vec::new()),
+      divisors: divisors(order, &[2, 3]),
     };
     if order.is_multiple_of(3) {
       let omega_3_1 = res.root(3);
@@ -337,6 +341,117 @@ impl<F: PrimeField> NttEngine<F> {
       }
       size => self.ntt_recurse(values, roots, size),
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ReedSolomon trait implementation
+// ---------------------------------------------------------------------------
+
+use super::pcs::ReedSolomon;
+use super::utils::transpose_permute;
+
+impl<F: PrimeField> ReedSolomon<F> for NttEngine<F> {
+  fn next_order(&self, size: usize) -> Option<usize> {
+    match self.divisors.binary_search(&size) {
+      Ok(index) | Err(index) => self.divisors.get(index).copied(),
+    }
+  }
+
+  fn evaluation_points(
+    &self,
+    masked_message_length: usize,
+    codeword_length: usize,
+    indices: &[usize],
+  ) -> Vec<F> {
+    assert!(masked_message_length <= codeword_length);
+    assert!(self.order.is_multiple_of(codeword_length));
+    let mut result = Vec::new();
+    let generator = self
+      .omega_order
+      .pow([(self.order / codeword_length) as u64]);
+
+    // Coset transformation
+    let mut coset_size = self.next_order(masked_message_length).unwrap();
+    while !codeword_length.is_multiple_of(coset_size) {
+      coset_size = self.next_order(coset_size + 1).unwrap();
+    }
+    let num_cosets = codeword_length / coset_size;
+
+    for &index in indices {
+      assert!(index < codeword_length);
+      let index = transpose_permute(index, num_cosets, coset_size);
+      result.push(generator.pow([index as u64]));
+    }
+    result
+  }
+
+  fn interleaved_encode(&self, messages: &[&[F]], masks: &[F], codeword_length: usize) -> Vec<F> {
+    assert!(self.order.is_multiple_of(codeword_length));
+    if messages.is_empty() {
+      assert!(masks.is_empty());
+      return Vec::new();
+    }
+    let num_messages = messages.len();
+    let message_len = messages[0].len();
+    assert!(messages.iter().all(|m| m.len() == message_len));
+    assert!(masks.len().is_multiple_of(num_messages));
+    let mask_length = masks.len() / num_messages;
+    let masked_message_length = message_len + mask_length;
+    assert!(masked_message_length <= codeword_length);
+
+    // Coset-NTT: instead of doing one codeword-length NTT on mostly zeros,
+    // do `num_cosets` many `coset_size`-point NTTs on twisted coefficient
+    // vectors. For coset `c`, we evaluate on points
+    //
+    //     ω_N^{c + j * num_cosets} = ω_N^c · (ω_N^{num_cosets})^j
+    //
+    // so the coefficient of X^i must be multiplied by (ω_N^c)^i.
+    //
+    // You can also see this as applying a first round of Cooley-Tukey with
+    // N = coset_size × num_cosets, and solving it directly by observing that
+    // only the first coset is non-zero.
+    let mut coset_size = self.next_order(masked_message_length).unwrap();
+    while !codeword_length.is_multiple_of(coset_size) {
+      coset_size = self.next_order(coset_size + 1).unwrap();
+    }
+    let num_cosets = codeword_length / coset_size;
+    let coset_padding = coset_size - masked_message_length;
+
+    // Lay out twisted coefficients in contiguous coset blocks of length
+    // `coset_size`, zero-padding each block as needed.
+    let mut result = Vec::with_capacity(num_messages * codeword_length);
+    let mask_chunks: Vec<&[F]> = if mask_length > 0 {
+      masks.chunks_exact(mask_length).collect()
+    } else {
+      vec![&[]; num_messages]
+    };
+    assert_eq!(messages.len(), mask_chunks.len());
+    for (message, mask) in messages.iter().zip(mask_chunks.iter()) {
+      // FFT[a 0 0 0] = [a a a a], so just replicate input in coset dimension.
+      for _ in 0..num_cosets {
+        result.extend_from_slice(message);
+        result.extend_from_slice(mask);
+        result.resize(result.len() + coset_padding, F::ZERO);
+      }
+    }
+    assert_eq!(result.len(), num_messages * codeword_length);
+
+    // NTT each coset block, then transpose each codeword block from
+    // coset-major `(num_cosets × coset_size)` layout into standard codeword
+    // order `(coset_size × num_cosets)`, where global index is
+    // `c + j * num_cosets`.
+    apply_twiddles(
+      &mut result,
+      self.roots_table(codeword_length).as_slice(),
+      num_cosets,
+      coset_size,
+    );
+    self.ntt_batch(&mut result, coset_size);
+
+    // Transpose to row-major order with vectors stacked horizontally.
+    transpose(&mut result, num_messages, codeword_length);
+    result
   }
 }
 
@@ -1118,5 +1233,110 @@ mod tests {
           let expected = get_largest_divisor_up_to_sqrt(n);
           prop_assert_eq!(sqrt_factor(n), expected);
       }
+  }
+
+  // --- Reed-Solomon tests ---
+
+  use proptest::{collection, prelude::Just, sample::select, strategy::Strategy};
+  use rand::{SeedableRng, rngs::StdRng};
+  use std::iter;
+
+  /// Horner's method: evaluate polynomial `coeffs` at point `x`.
+  fn univariate_evaluate<F: Field>(coeffs: &[F], x: F) -> F {
+    coeffs.iter().rev().fold(F::ZERO, |acc, &c| acc * x + c)
+  }
+
+  /// Returns up to `count` NTT-smooth codeword lengths >= `size` for field `F`.
+  fn valid_codeword_lengths<F: PrimeField>(
+    engine: &NttEngine<F>,
+    size: usize,
+    count: usize,
+  ) -> Vec<usize> {
+    iter::successors(engine.next_order(size), |&s| engine.next_order(s + 1))
+      .take(count)
+      .collect()
+  }
+
+  fn test_rs<F: PrimeField>(engine: &NttEngine<F>) {
+    let cases = (
+      0_usize..10,
+      0_usize..(1 << 8), // smaller than WHIR to keep test fast
+      0_usize..(1 << 8),
+      1_usize..=16,
+    )
+      .prop_flat_map(|(num_messages, message_length, mask_length, sample_size)| {
+        let codeword_lengths = valid_codeword_lengths::<F>(
+          &NttEngine::<F>::new_from_PrimeField(),
+          message_length + mask_length,
+          4,
+        );
+        if codeword_lengths.is_empty() {
+          return Just((num_messages, message_length, mask_length, 0, vec![])).boxed();
+        }
+        select(codeword_lengths)
+          .prop_flat_map(move |codeword_length| {
+            let sample_size = sample_size.min(codeword_length.max(1));
+            (
+              Just(num_messages),
+              Just(message_length),
+              Just(mask_length),
+              Just(codeword_length),
+              collection::vec(0..codeword_length.max(1), sample_size),
+            )
+          })
+          .boxed()
+      });
+
+    proptest!(|(
+      seed: u64,
+      (num_messages, message_length, mask_length, codeword_length, sampled_indices) in cases
+    )| {
+      if codeword_length == 0 { return Ok(()); }
+      let mut rng = StdRng::seed_from_u64(seed);
+      let messages: Vec<Vec<F>> = (0..num_messages)
+        .map(|_| (0..message_length).map(|_| F::random(&mut rng)).collect())
+        .collect();
+      let masks: Vec<F> = (0..mask_length * num_messages).map(|_| F::random(&mut rng)).collect();
+      let message_refs: Vec<&[F]> = messages.iter().map(|v| v.as_slice()).collect();
+
+      let codeword = engine.interleaved_encode(&message_refs, &masks, codeword_length);
+
+      // Output size check.
+      assert_eq!(codeword.len(), codeword_length * num_messages);
+
+      // Each codeword value == polynomial evaluation at the corresponding point.
+      let evaluation_points = engine.evaluation_points(
+        message_length + mask_length, codeword_length, &sampled_indices,
+      );
+      for (&index, &eval_point) in sampled_indices.iter().zip(evaluation_points.iter()) {
+        let evaluations = &codeword[index * num_messages..(index + 1) * num_messages];
+        let mask_chunks: Vec<&[F]> = if mask_length > 0 {
+          masks.chunks_exact(mask_length).collect()
+        } else {
+          vec![&[]; num_messages]
+        };
+        for ((message, mask), &value) in messages.iter().zip(mask_chunks.iter()).zip(evaluations.iter()) {
+          let expected = univariate_evaluate(message, eval_point)
+            + eval_point.pow([message_length as u64]) * univariate_evaluate(mask, eval_point);
+          prop_assert_eq!(value, expected);
+        }
+      }
+
+      // Evaluation points are unique for unique indices.
+      let mut deduped_indices = sampled_indices.clone();
+      deduped_indices.sort_unstable();
+      deduped_indices.dedup();
+      let mut deduped_points: Vec<F> = engine
+        .evaluation_points(message_length + mask_length, codeword_length, &deduped_indices);
+      deduped_points.sort_unstable_by(|a, b| a.to_repr().as_ref().cmp(b.to_repr().as_ref()));
+      deduped_points.dedup();
+      prop_assert_eq!(deduped_indices.len(), deduped_points.len());
+    });
+  }
+
+  #[test]
+  fn test_rs_bn254_fr() {
+    let engine = NttEngine::<Fr>::new_from_PrimeField();
+    test_rs(&engine);
   }
 }
