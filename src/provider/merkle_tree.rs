@@ -77,8 +77,8 @@ impl MerkleTree {
       let (upper, current_level) = nodes.split_at_mut(child_start);
       let input: &[u8] = current_level[..level_size].as_flattened();
       H::hash_many(
-        input,
         64,
+        input,
         &mut upper[parent_start..parent_start + level_size / 2],
       );
       level_size /= 2;
@@ -288,7 +288,7 @@ pub fn batch_verify<H: Hash>(
     }
 
     next_hashes.resize(input_hashes.len() / 2, [0u8; 32]);
-    H::hash_many(input_hashes.as_flattened(), 64, &mut next_hashes);
+    H::hash_many(64, input_hashes.as_flattened(), &mut next_hashes);
     swap(&mut current_indices, &mut next_indices);
     swap(&mut current_hashes, &mut next_hashes);
   }

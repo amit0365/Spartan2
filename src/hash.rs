@@ -35,7 +35,7 @@ pub trait Hash:
   ///
   /// `input` is a flat byte slice of `output.len()` chunks, each `chunk_size` bytes.
   /// Each chunk is hashed independently into the corresponding `output[i]` digest.
-  fn hash_many(input: &[u8], chunk_size: usize, output: &mut [[u8; 32]]) {
+  fn hash_many(chunk_size: usize, input: &[u8], output: &mut [[u8; 32]]) {
     debug_assert_eq!(input.len(), chunk_size * output.len());
     input
       .par_chunks(chunk_size)
