@@ -14,11 +14,14 @@ pub mod pcs;
 pub mod pt256;
 pub mod traits;
 
+mod bits;
 #[allow(dead_code)]
 mod merkle_tree;
 mod msm;
 #[allow(dead_code)]
 mod ntt;
+#[allow(dead_code)]
+mod proof_of_work;
 #[allow(unsafe_code, dead_code)]
 mod utils;
 
