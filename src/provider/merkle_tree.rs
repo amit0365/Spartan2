@@ -6,8 +6,7 @@
 
 use std::mem::swap;
 
-use crate::errors::SpartanError;
-use crate::hash::Hash;
+use crate::{errors::SpartanError, hash::Hash};
 use ff::PrimeField;
 use sha3::digest::Digest as DigestTrait;
 

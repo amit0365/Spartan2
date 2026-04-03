@@ -11,7 +11,8 @@ use std::{
 };
 
 use ff::PrimeField;
-use {rayon::prelude::*, std::cmp::max};
+use rayon::prelude::*;
+use std::cmp::max;
 
 use super::utils::{transpose, workload_size};
 
@@ -66,6 +67,15 @@ pub fn intt<F: PrimeField>(values: &mut [F]) {
 /// Compute the inverse NTT of multiple slice of field elements, each of size `size`, without the 1/n scaling factor and using a cached engine.
 pub fn intt_batch<F: PrimeField>(values: &mut [F], size: usize) {
   NttEngine::<F>::new_from_cache().intt_batch(values, size);
+}
+
+/// Compute an interleaved Reed-Solomon encoding using a cached engine.
+pub fn interleaved_rs_encode<F: PrimeField>(
+  messages: &[&[F]],
+  masks: &[F],
+  codeword_length: usize,
+) -> Vec<F> {
+  NttEngine::<F>::new_from_cache().interleaved_encode(messages, masks, codeword_length)
 }
 
 impl<F: PrimeField> NttEngine<F> {
@@ -348,8 +358,7 @@ impl<F: PrimeField> NttEngine<F> {
 // ReedSolomon trait implementation
 // ---------------------------------------------------------------------------
 
-use super::pcs::ReedSolomon;
-use super::utils::transpose_permute;
+use super::{pcs::ReedSolomon, utils::transpose_permute};
 
 impl<F: PrimeField> ReedSolomon<F> for NttEngine<F> {
   fn next_order(&self, size: usize) -> Option<usize> {
