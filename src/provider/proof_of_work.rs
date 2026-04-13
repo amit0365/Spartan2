@@ -1,4 +1,5 @@
 //! Protocol for grinding and verifying proof of work.
+//! Reference: https://github.com/WizardOfMenlo/whir
 
 use crate::{
   errors::SpartanError,
@@ -11,9 +12,8 @@ use ff::PrimeField;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct Config {
+pub struct PowConfig {
   pub threshold: u64,
-  pub batch_size: usize,
 }
 
 pub fn threshold(difficulty: Bits) -> u64 {
@@ -32,11 +32,10 @@ pub fn difficulty(threshold: u64) -> Bits {
   Bits::from(64.0 - (threshold as f64).log2())
 }
 
-impl Config {
+impl PowConfig {
   pub const fn none() -> Self {
     Self {
       threshold: u64::MAX,
-      batch_size: 64,
     }
   }
 
@@ -44,7 +43,6 @@ impl Config {
   pub fn from_difficulty(difficulty: Bits) -> Self {
     Self {
       threshold: threshold(difficulty),
-      batch_size: 64,
     }
   }
 
@@ -81,18 +79,18 @@ impl Config {
     let hash = H::digest(input);
     let value = u64::from_le_bytes(hash[..8].try_into().unwrap());
     if value > self.threshold {
-        return Err(SpartanError::ProofVerifyError {
-            reason: "proof-of-work verification failed".into(),
-        });
+      return Err(SpartanError::ProofVerifyError {
+        reason: "proof-of-work verification failed".into(),
+      });
     }
-    
+
     Ok(())
   }
 
   /// Parallel grinding: find the minimum nonce satisfying the threshold.
   fn grind<H: Hash>(&self, challenge: &[u8; 32]) -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
-    let batch_size = self.batch_size;
+    let batch_size = H::preferred_batch_size();
     // Split the work across all available threads.
     // Use atomics to find the unique deterministic lowest satisfying nonce.
     let global_min = AtomicU64::new(u64::MAX);
@@ -167,17 +165,14 @@ mod tests {
     Keccak256Transcript::<E>::new(b"pow_test")
   }
 
-  impl Config {
+  impl PowConfig {
     pub fn arbitrary() -> impl Strategy<Value = Self> {
       // threshold in range [u64::MAX >> 6 ..] ensures low difficulty (fast tests)
-      ((u64::MAX >> 6)..).prop_map(|threshold| Self {
-        threshold,
-        batch_size: 64,
-      })
+      ((u64::MAX >> 6)..).prop_map(|threshold| Self { threshold })
     }
   }
 
-  fn test_config(config: &Config) {
+  fn test_config(config: &PowConfig) {
     // Prover
     let mut prover_t = make_transcript();
     let nonce = config.prove::<E, H>(&mut prover_t).unwrap();
@@ -189,14 +184,14 @@ mod tests {
 
   #[test]
   fn test_pow() {
-    proptest!(|(config in Config::arbitrary())| {
+    proptest!(|(config in PowConfig::arbitrary())| {
         test_config(&config);
     });
   }
 
   #[test]
   fn test_pow_none_is_noop() {
-    let config = Config::none();
+    let config = PowConfig::none();
     let mut t = make_transcript();
     let nonce = config.prove::<E, H>(&mut t).unwrap();
     assert_eq!(nonce, u64::MAX);

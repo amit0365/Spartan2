@@ -2,7 +2,7 @@
 //!
 //! Implements the √N Cooley-Tukey six-step algorithm to achieve parallelism with good locality.
 //! A global cache is used for twiddle factors.
-// Ported from https://github.com/WizardOfMenlo/whir
+//! Reference: https://github.com/WizardOfMenlo/whir
 
 use std::{
   any::{Any, TypeId},
@@ -369,11 +369,11 @@ impl<F: PrimeField> ReedSolomon<F> for NttEngine<F> {
 
   fn evaluation_points(
     &self,
-    masked_message_length: usize,
+    message_length: usize,
     codeword_length: usize,
     indices: &[usize],
   ) -> Vec<F> {
-    assert!(masked_message_length <= codeword_length);
+    assert!(message_length <= codeword_length);
     assert!(self.order.is_multiple_of(codeword_length));
     let mut result = Vec::new();
     let generator = self
@@ -381,7 +381,7 @@ impl<F: PrimeField> ReedSolomon<F> for NttEngine<F> {
       .pow([(self.order / codeword_length) as u64]);
 
     // Coset transformation
-    let mut coset_size = self.next_order(masked_message_length).unwrap();
+    let mut coset_size = self.next_order(message_length).unwrap();
     while !codeword_length.is_multiple_of(coset_size) {
       coset_size = self.next_order(coset_size + 1).unwrap();
     }
@@ -406,8 +406,8 @@ impl<F: PrimeField> ReedSolomon<F> for NttEngine<F> {
     assert!(messages.iter().all(|m| m.len() == message_len));
     assert!(masks.len().is_multiple_of(num_messages));
     let mask_length = masks.len() / num_messages;
-    let masked_message_length = message_len + mask_length;
-    assert!(masked_message_length <= codeword_length);
+    let message_length = message_len + mask_length;
+    assert!(message_length <= codeword_length);
 
     // Coset-NTT: instead of doing one codeword-length NTT on mostly zeros,
     // do `num_cosets` many `coset_size`-point NTTs on twisted coefficient
@@ -420,12 +420,12 @@ impl<F: PrimeField> ReedSolomon<F> for NttEngine<F> {
     // You can also see this as applying a first round of Cooley-Tukey with
     // N = coset_size × num_cosets, and solving it directly by observing that
     // only the first coset is non-zero.
-    let mut coset_size = self.next_order(masked_message_length).unwrap();
+    let mut coset_size = self.next_order(message_length).unwrap();
     while !codeword_length.is_multiple_of(coset_size) {
       coset_size = self.next_order(coset_size + 1).unwrap();
     }
     let num_cosets = codeword_length / coset_size;
-    let coset_padding = coset_size - masked_message_length;
+    let coset_padding = coset_size - message_length;
 
     // Lay out twisted coefficients in contiguous coset blocks of length
     // `coset_size`, zero-padding each block as needed.

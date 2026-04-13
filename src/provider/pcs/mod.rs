@@ -13,6 +13,10 @@ pub mod ipa;
 
 // implementations of polynomial commitment schemes
 pub mod hyrax_pc;
+#[allow(dead_code)]
+pub mod whir;
+
+pub mod irs;
 
 /// Trait for a Reed-Solomon encoder over field `F`.
 ///
@@ -27,12 +31,12 @@ pub trait ReedSolomon<F>: Debug + Send + Sync {
 
   /// Returns evaluation points at the given indices.
   ///
-  /// `masked_message_length`: message length including mask values.
-  /// `codeword_length`: must be a supported order >= `masked_message_length`.
+  /// `message_length`: message length including mask values.
+  /// `codeword_length`: must be a supported order >= `message_length`.
   /// `indices`: positions within `[0, codeword_length)`.
   fn evaluation_points(
     &self,
-    masked_message_length: usize,
+    message_length: usize,
     codeword_length: usize,
     indices: &[usize],
   ) -> Vec<F>;

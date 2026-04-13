@@ -2,7 +2,7 @@
 //!
 //! Provides a cache-oblivious matrix transpose and a strided matrix view (`MatrixMut`)
 //! used by NTT-based Reed-Solomon encoding and other PCS infrastructure.
-// Ported from https://github.com/WizardOfMenlo/whir
+//! Reference: https://github.com/WizardOfMenlo/whir
 
 use std::{
   marker::PhantomData,
@@ -10,6 +10,8 @@ use std::{
   ops::{Index, IndexMut},
   ptr, slice,
 };
+
+use ff::Field;
 
 /// Target single-thread workload size for `T`.
 /// Should ideally be a multiple of a cache line (64 bytes)
@@ -38,6 +40,48 @@ pub const fn workload_size<T: Sized>() -> usize {
   const CACHE_SIZE: usize = 1 << 15; // 32KB default
 
   CACHE_SIZE / size_of::<T>()
+}
+
+/// Multiply every element of `vector` by `weight` in place.
+pub fn scalar_mul<F: Field>(vector: &mut [F], weight: F) {
+  for value in vector.iter_mut() {
+    *value *= weight;
+  }
+}
+
+pub fn powers<F: Field>(base: F, length: usize) -> Vec<F> {
+  let mut result = Vec::with_capacity(length);
+  let mut current = F::ONE;
+  for _ in 0..length {
+    result.push(current);
+    current *= base;
+  }
+  result
+}
+
+/// Compute `accumulator[i] += sum_j scalars[j] * points[j]^i`.
+pub fn vandermonde_accumulate<F: Field>(accumulator: &mut [F], mut scalars: Vec<F>, points: &[F]) {
+  if accumulator.len() > workload_size::<F>() {
+    let half = accumulator.len() / 2;
+    let (low, high) = accumulator.split_at_mut(half);
+    let scalars_high = scalars
+      .iter()
+      .zip(points)
+      .map(|(s, x)| *s * x.pow([half as u64]))
+      .collect();
+    rayon::join(
+      || vandermonde_accumulate(low, scalars, points),
+      || vandermonde_accumulate(high, scalars_high, points),
+    );
+    return;
+  }
+
+  for entry in accumulator {
+    for (scalar, point) in scalars.iter_mut().zip(points) {
+      *entry += *scalar;
+      *scalar *= *point;
+    }
+  }
 }
 
 /// Mutable reference to a matrix.

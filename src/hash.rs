@@ -31,6 +31,12 @@ pub trait Hash:
     hasher.finalize()
   }
 
+  /// Optimal number of inputs to pass to `hash_many` per call.
+  /// Override for SIMD-capable hashes (e.g. Blake3 returns its SIMD lane count).
+  fn preferred_batch_size() -> usize {
+    64
+  }
+
   /// Hash many fixed-size chunks in parallel.
   ///
   /// `input` is a flat byte slice of `output.len()` chunks, each `chunk_size` bytes.
