@@ -1,0 +1,3 @@
+- [WHIR PCS Implementation](project_whir_pcs.md) — Full project context: architecture, trait mappings, file layout, build order, progress. The detailed plan is at `/Users/ak36/.claude/plans/federated-stirring-coral.md`
+- [User Profile](user_profile.md) — Crypto/ZK engineer, implements primitives themselves, has local WHIR repo at /Users/ak36/Desktop/rust/whir/
+- [Collaboration Style](feedback_style.md) — Provide architecture/verification, not code generation for crypto primitives. Keep plans updated.
